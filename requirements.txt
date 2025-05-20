@@ -1,0 +1,17 @@
+requests>=2.20.0
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0 # ASGI server for FastAPI
+
+# For transcribe.py (if in the same environment)
+pyaudio>=0.2.11
+numpy>=1.20.0
+openai-whisper>=20231117
+torch>=2.0.0
+rich>=13.0.0
+
+# Flask is no longer needed
+# Flask>=2.0.0
+
+# Potentially no longer needed by summary.py if Ollama is used exclusively for LLM:
+# transformers>=4.30.0
+# accelerate>=0.20.0 
