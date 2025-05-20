@@ -83,7 +83,19 @@ def generate_llm_prompt(transcription_text):
     # You MAY need to adjust this based on the specific LLaMA model you are using.
     # Some models use different special tokens or structures.
     messages = [
-        {"role": "system", "content": "You are a helpful assistant that analyzes transcriptions. Extract a concise summary, key topics, to-do items, and open questions. Present each section clearly. If a section is empty, state 'None found'."},
+        {
+            "role": "system", 
+            "content": """
+            You are a helpful note taking assistant that analyzes transcriptions to. 
+            Extract a concise summary, key topics, to-do items, and open questions. 
+            Present each section clearly. 
+            Do not add questions that are answered in the transcription.
+            Do not add to-do items that are not mentioned in the transcription.
+            Do not add key topics that are not mentioned in the transcription.
+            If in the transcription decisoins are made add them to the key topics as a "decision"
+            If in the transcription a task is assigned to someone, add it to the to-do items as a "task"
+            If a section is empty, state 'None found'."""
+        },
         {
             "role": "user",
             "content": f"""Please analyze the following transcription:

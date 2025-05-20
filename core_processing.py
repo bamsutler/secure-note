@@ -31,7 +31,7 @@ console = Console()
 DB_NAME_DEFAULT = "transcriptions.db"
 MARKDOWN_SAVE_PATH_DEFAULT = "transcription_notes"
 OLLAMA_API_URL_DEFAULT = "http://localhost:11434/api/generate"
-OLLAMA_MODEL_NAME_DEFAULT = "llama3.1:latest"
+OLLAMA_MODEL_NAME_DEFAULT = "llama3.2:latest"
 DEFAULT_WHISPER_MODEL = "base"
 
 FAILED_ANALYSIS_SUMMARIES = [
