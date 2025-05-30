@@ -1,0 +1,5 @@
+Review the transcription and extract ONLY the action items or to-do tasks mentioned.
+If assignees are mentioned, include them.
+Present as a bulleted list in Markdown.
+If none, state 'None found'.
+Do not add any other commentary or labels like 'Action Items:'. 

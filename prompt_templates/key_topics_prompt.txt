@@ -1,0 +1,3 @@
+From the transcription below, identify and list ONLY the main topics discussed.
+Present them as a bulleted list in Markdown. 
+Do not add any other commentary or labels like 'Key Topics:'. 

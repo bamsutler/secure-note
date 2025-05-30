@@ -1,0 +1,4 @@
+Based on the following transcription, generate ONLY a concise and relevant title for the meeting.
+Do not add any other commentary or labels like 'Title:', 'Meeting', 'Analysis'. 
+Use a MAX of 7 words. 
+The Title should be a meeting title based on the content of the meeting and the date. 

@@ -2,6 +2,7 @@ requests>=2.20.0
 fastapi>=0.100.0
 uvicorn[standard]>=0.20.0 # ASGI server for FastAPI
 python-multipart>=0.0.6  # Required for FastAPI form data handling
+pyyaml>=6.0.1  # For configuration management
 
 # For transcribe.py (if in the same environment)
 pyaudio>=0.2.11
@@ -18,4 +19,6 @@ pyinstaller>=6.3.0
 
 # Potentially no longer needed by summary.py if Ollama is used exclusively for LLM:
 # transformers>=4.30.0
-# accelerate>=0.20.0 
+# accelerate>=0.20.0
+# Testing related dependencies
+pytest 

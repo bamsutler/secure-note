@@ -1,0 +1,17 @@
+Considering this transcript write a summary
+
+The summary should:
+- Capture the main topics and decisions discussed
+- Highlight any important conclusions or agreements reached
+- Include relevant context about participants or meeting purpose if mentioned
+- Be concise but comprehensive (aim for 3-5 key points)
+- Focus on actionable outcomes and next steps
+- Maintain a professional and objective tone
+- Exclude personal opinions or editorializing
+- Avoid technical jargon unless it's essential to the discussion
+
+Format the summary as clear, well-structured paragraphs that flow logically from one point to the next.
+
+Note: This will be included as a section in a larger meeting report that will also contain other sections like key topics, action items, and open questions. 
+Focus only on providing a high-level overview of the meeting's content and outcomes.
+The Response should be in well formed Markdown

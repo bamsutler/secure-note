@@ -16,3 +16,6 @@ secure_note.py
 /.venv
 secure-note.spec
 uninstall-secure-note.spec
+data
+
+config.yaml

@@ -94,18 +94,37 @@ def uninstall_application():
         except Exception as e:
             print(f"Error removing cache directory: {e}")
 
+def uninstall_config():
+    """Uninstall the configuration files"""
+    print("Uninstalling configuration files...")
+    config_dir = Path.home() / ".sec_note_app"
+    if config_dir.exists():
+        shutil.rmtree(config_dir)
+        print(f"Removed configuration directory and database")
+    else:
+        print("No configuration directory found")
+
+
 def main():
     print("Starting uninstallation...")
     
     # Ask for confirmation
+    print("This will remove all your data and configuration files, generated notes will not be deleted.")
+    print("You can find your data in ~/Documents/SecureNote/MeetingNotes")
+    print("You will have the option to delete each dependency individually.")
     response = input("Are you sure you want to uninstall Secure Note? (y/N): ")
     if response.lower() != 'y':
         print("Uninstallation cancelled")
         return
     
     # Uninstall components
-    uninstall_ollama()
-    uninstall_brew_dependencies()
+    uninstall_config()
+    response = input("Do you want to uninstall Ollama? (y/N): ")
+    if response.lower() == 'y':
+        uninstall_ollama()
+    response = input("Do you want to uninstall BlackHole? (y/N): ")
+    if response.lower() == 'y':
+        uninstall_brew_dependencies()
     uninstall_application()
     
     print("Uninstallation complete!")

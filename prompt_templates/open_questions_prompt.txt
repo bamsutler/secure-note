@@ -1,0 +1,3 @@
+Based on the transcription, list ONLY any open questions, unresolved issues, or points needing further clarification.
+Present as a bulleted list in Markdown.
+If none, state 'None found'. Do not add any other commentary or labels like 'Open Questions:'. 

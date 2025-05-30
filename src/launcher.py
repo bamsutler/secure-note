@@ -7,6 +7,10 @@ import argparse
 import time
 from pathlib import Path
 from datetime import datetime
+import yaml
+
+from src import config_service
+from src import transcribe
 
 def check_command_exists(command):
     """Check if a command exists in the system PATH or if it's a special case like BlackHole"""
@@ -109,20 +113,19 @@ def install_ollama():
     
     if not check_command_exists('ollama'):
         print("Installing Ollama...")
-        if platform.system() == 'Darwin':
-            # macOS installation
-            subprocess.run([
-                '/bin/bash', '-c',
-                '$(curl -fsSL https://ollama.com/install.sh)'
-            ], check=True)
-        elif platform.system() == 'Linux':
-            # Linux installation
-            subprocess.run([
-                '/bin/bash', '-c',
-                '$(curl -fsSL https://ollama.com/install.sh)'
-            ], check=True)
+        # Use /bin/sh for broader compatibility
+        install_command_base = ['sudo', '/bin/bash', '-c']
+        install_script_curl = '$(curl -fsSL https://ollama.com/install.sh)'
+        
+        if platform.system() == 'Darwin' or platform.system() == 'Linux':
+            try:
+                subprocess.run(install_command_base + [install_script_curl], check=True)
+            except FileNotFoundError:
+                # Fallback if /bin/sh is not found, though highly unlikely
+                print("Error: /bin/sh not found. Trying with 'sh' directly.")
+                subprocess.run(['sh', '-c', install_script_curl], check=True) # Assumes sh is in PATH
         else:
-            print("Warning: Ollama installation not supported on this platform")
+            print("Warning: Ollama installation not supported on this platform via this script.")
             return False
         ollama_was_installed = True
     
@@ -130,7 +133,7 @@ def install_ollama():
     print("\nInstalling required Ollama model...")
     try:
         # Pull the model (this will download it if not present)
-        subprocess.run(['ollama', 'pull', 'meta-llama/Llama-3-8B-Instruct'], check=True)
+        subprocess.run(['ollama', 'pull', 'llama3.2:latest'], check=True)
         print("Model installed successfully")
     except subprocess.CalledProcessError as e:
         print(f"Error installing model: {e}")
@@ -152,10 +155,27 @@ def install_brew_dependencies():
     # Check if Homebrew is installed
     if not check_command_exists('brew'):
         print("Installing Homebrew...")
-        subprocess.run([
-            '/bin/bash', '-c',
-            '$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)'
-        ], check=True)
+        # Homebrew installation command requires sudo and /bin/bash.
+        # The script will prompt for the user's password.
+        install_script_curl = '$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)'
+        homebrew_install_command = ['sudo', '/bin/bash', '-c', install_script_curl]
+        
+        try:
+            print("Attempting to install Homebrew. This requires sudo privileges and may ask for your password.")
+            subprocess.run(homebrew_install_command, check=True)
+            print("Homebrew installation command submitted. Please follow any on-screen prompts from the Homebrew installer.")
+        except subprocess.CalledProcessError as e:
+            print(f"Homebrew installation failed. The Homebrew installer exited with an error: {e}")
+            print("Please try installing Homebrew manually from https://brew.sh/ and then re-run this launcher.")
+            sys.exit(1)
+        except FileNotFoundError:
+            # This error means that 'sudo' or '/bin/bash' itself was not found.
+            print("Error: Command 'sudo' or '/bin/bash' not found. These are essential for Homebrew installation.")
+            print("Please ensure they are installed and accessible in your system's PATH.")
+            sys.exit(1)
+        except Exception as e: # Catch any other unexpected error
+            print(f"An unexpected error occurred while trying to run the Homebrew installer: {e}")
+            sys.exit(1)
     
     # Install portaudio (required for PyAudio)
     if not check_command_exists('portaudio'):
@@ -236,20 +256,26 @@ def uninstall_application():
         app_dir = os.path.dirname(sys.executable)
         try:
             # Instead of removing the executable directly, we'll create a cleanup script
-            cleanup_script = os.path.join(app_dir, 'cleanup.sh')
-            with open(cleanup_script, 'w') as f:
-                f.write(f'''#!/bin/bash
+            cleanup_script_path = os.path.join(app_dir, 'cleanup.sh')
+            # Ensure the shebang uses /bin/sh
+            cleanup_script_content = f'''#!/bin/sh
 # Wait a moment for the main process to exit
 sleep 2
 # Remove the executable
 rm -f "{sys.executable}"
 # Remove this cleanup script
 rm -f "$0"
-''')
+'''
+            with open(cleanup_script_path, 'w') as f:
+                f.write(cleanup_script_content)
             # Make the cleanup script executable
-            os.chmod(cleanup_script, 0o755)
-            # Run the cleanup script in the background
-            subprocess.Popen(['/bin/bash', cleanup_script])
+            os.chmod(cleanup_script_path, 0o755)
+            # Run the cleanup script in the background using /bin/sh
+            try:
+                subprocess.Popen(['/bin/bash', cleanup_script_path])
+            except FileNotFoundError:
+                print("Error: /bin/bash not found for cleanup script. Trying with 'bash' directly.")
+                subprocess.Popen(['bash', cleanup_script_path])
             print(f"Cleanup script created to remove executable: {sys.executable}")
         except Exception as e:
             print(f"Error creating cleanup script: {e}")
@@ -286,140 +312,128 @@ def uninstall():
     print("1. Any configuration files in your home directory")
     print("2. Any data files you created with the application")
 
+def get_user_directory_choice(prompt, default_path):
+    """Get directory choice from user with validation"""
+    while True:
+        print(f"\n{prompt}")
+        print(f"Default: {default_path}")
+        print("Press Enter to use default, or enter a new path:")
+        user_path = input().strip()
+        
+        if not user_path:  # User pressed Enter
+            return default_path
+            
+        # Convert to absolute path if relative
+        abs_path = os.path.abspath(os.path.expanduser(user_path))
+        
+        # Check if directory exists
+        if not os.path.exists(abs_path):
+            try:
+                os.makedirs(abs_path)
+                print(f"Created directory: {abs_path}")
+            except Exception as e:
+                print(f"Error creating directory: {e}")
+                print("Please try again with a valid path.")
+                continue
+        
+        # Check if directory is writable
+        if not os.access(abs_path, os.W_OK):
+            print(f"Directory is not writable: {abs_path}")
+            print("Please choose a different location.")
+            continue
+            
+        return abs_path
+
+def setup_storage_directories():
+    """Set up storage directories based on user input, or use existing config."""
+
+    # Instance of ConfigurationService to access its new defaults for comparison or initial load behavior
+    # This doesn't load a file yet, just sets up the service to know its default paths
+    config = config_service.ConfigurationService()
+
+    app_config_dir = Path(config.get('paths', 'app_config_dir'))
+    user_specific_config_path = app_config_dir / "config.yaml"
+
+    if user_specific_config_path.exists():
+        print(f"\nExisting user-specific configuration found at: {user_specific_config_path}")
+        try:
+            with open(user_specific_config_path, 'r') as f:
+                user_config = yaml.safe_load(f) or {}
+            
+            # Ensure essential directories from the user's config exist
+            markdown_save_from_user_config = user_config.get('paths', {}).get('markdown_save')
+            if markdown_save_from_user_config:
+                os.makedirs(markdown_save_from_user_config, exist_ok=True)
+                print(f"Ensured markdown directory from user config exists: {markdown_save_from_user_config}")
+            else:
+                # If not in user config, ensure the default markdown path from ConfigurationService exists
+                default_md_path = config.get('paths', 'markdown_save')
+                if default_md_path: os.makedirs(default_md_path, exist_ok=True)
+            
+            # Database and temp paths are now primarily managed by defaults in ConfigurationService
+            # We just need to ensure the ~/.sec_note_app directory exists for them.
+            app_config_dir.mkdir(parents=True, exist_ok=True)
+            print(f"Ensured base application config directory exists: {app_config_dir}")
+            return True
+        except Exception as e:
+            print(f"Error reading or processing existing user config at {user_specific_config_path}: {e}")
+            print("Proceeding to ask for directory configuration.")
+
+    print("\n=== Storage Directory Configuration ===")
+    print("You can customize where your analyses are stored.")
+    
+    # New default for markdown_save to present to user
+    default_markdown_dir_for_prompt = config.get('paths', 'markdown_save')
+    
+    analyses_dir_choice = get_user_directory_choice(
+        "Where would you like to store your analysis markdown files?",
+        default_markdown_dir_for_prompt
+    )
+    
+    app_config_dir.mkdir(parents=True, exist_ok=True) # Ensure ~/.sec_note_app exists
+
+    default_config = config.get_config()
+    default_config['paths']['markdown_save'] = analyses_dir_choice
+    
+    with open(user_specific_config_path, 'w') as f:
+        yaml.dump(default_config, f, default_flow_style=False)
+    
+    print(f"\nUser-specific configuration saved to: {user_specific_config_path}")
+    os.makedirs(analyses_dir_choice, exist_ok=True)
+
+    return True
+
 def main():
-    parser = argparse.ArgumentParser(description='Secure Note Application')
-    parser.add_argument('--uninstall', action='store_true', help='Uninstall the application')
+    parser = argparse.ArgumentParser(description="Secure Note: Audio Transcription and Analysis")
+    parser.add_argument('--uninstall', action='store_true', help="Uninstall the application and its dependencies")
     args = parser.parse_args()
 
     if args.uninstall:
         uninstall()
-        return
-
-    print("Checking and installing external dependencies...")
-    
-    # Install Homebrew dependencies (macOS only)
-    install_brew_dependencies()
-    
-    # Install Ollama and its model
-    if not install_ollama():
-        print("Warning: Ollama installation failed or is not supported")
-        print("Some features may not work correctly")
-    
-    print("\nStarting application...")
-    
-    # Get the directory where the executable is located
-    if getattr(sys, 'frozen', False):
-        # Running as compiled executable
-        app_dir = os.path.dirname(sys.executable)
-    else:
-        # Running as script
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # Import and run the command-line interface
-    sys.path.insert(0, app_dir)
-    import transcribe
-    
-    # Initialize DB using the function from core_processing
-    transcribe.core_processing.init_db(db_name=transcribe.DB_NAME)
-    
-    # Attempt to load the Whisper model once at startup
-    try:
-        transcribe.core_processing.load_global_whisper_model(transcribe.DEFAULT_WHISPER_MODEL)
-    except Exception as e:
-        transcribe.log.critical(f"Fatal: Could not load the global Whisper model on startup: {e}")
-        transcribe.log.critical("The application cannot continue without a functional Whisper model.")
-        transcribe.log.critical("Please check your Whisper installation, model files, and system compatibility (e.g., ffmpeg).")
-        sys.exit(1)
-
-    transcribe.log.info("--------------   PYNOTES --------------")
-    transcribe.log.debug(f"Recordings, transcriptions, and analyses will be saved to '{transcribe.DB_NAME}'.")
-    transcribe.log.debug(f"Markdown files will be saved to '{transcribe.MARKDOWN_SAVE_PATH}'.")
-    transcribe.log.debug(f"Using Ollama model for analysis: '{transcribe.OLLAMA_MODEL_NAME}'")
-    whisper_model_choice_default = transcribe.DEFAULT_WHISPER_MODEL 
-    selected_device_id_session = None
-
-    transcribe.log.info("\n--- Select Audio Device for Microphone ---")
-    current_input_devices = transcribe.list_audio_devices()
-    if not current_input_devices: 
-        transcribe.log.warning("\nNo suitable input devices were found. Cannot start new recording.")
-    
-    try: 
-        device_choice_input = input("\nEnter the PyAudio INDEX of the audio device, 'd' for default, or 'q' to exit: ").strip().lower()
-    except ValueError: 
-        transcribe.log.warning("Invalid input. Enter a number (PyAudio Index), 'd', or 'b'.")
-    except KeyboardInterrupt:
-        transcribe.log.info("\nDevice selection interrupted. Returning to main menu.")
-    except EOFError:
-        transcribe.log.warning("\nEOF received during device selection. Returning to main menu.")
-    except Exception as e: 
-        transcribe.log.exception(f"An unexpected error during device selection: {e}")
-    if device_choice_input == 'd': 
-        selected_device_id_session = None # This will use default input for mic
-        transcribe.log.info("Default input device will be used for the microphone.")
-    elif device_choice_input == 'q':
-        transcribe.log.info("Exiting application.")
         sys.exit(0)
-    elif device_choice_input.isdigit():
-        potential_id = int(device_choice_input)
-        if any(dev['id'] == potential_id for dev in current_input_devices):
-            selected_device_id_session = potential_id
-    else:
-        transcribe.log.warning("Invalid input. Enter a number (PyAudio Index), 'd', or 'b'.")
-
-    while True:
-        transcribe.log.info("\n--- Main Menu ---")
-        action_choice = ""
-        try:
-            action_choice = input("Choose an action: (1) Re-analyze last recording, (2) Start new recording session, (q) Quit: ").strip().lower()
-        except KeyboardInterrupt:
-            transcribe.log.info("\nExiting application due to KeyboardInterrupt.")
-            sys.exit(0)
-        except EOFError:
-            transcribe.log.info("\nExiting application due to EOF.")
-            sys.exit(0)
-
-        if action_choice == '1':
-            last_record = transcribe.core_processing.get_last_transcription_for_reanalysis(db_name=transcribe.DB_NAME)
-            if last_record and last_record['transcription']:
-                transcribe.log.info(f"\nRe-analyzing transcription for recording ID: {last_record['id']}")
-                transcribe.log.info(f"Original Transcription:\n'''{last_record['transcription']}'''")
-                analysis_results = transcribe.core_processing.analyze_transcription_with_ollama(
-                    last_record['transcription'],
-                    ollama_api_url=transcribe.OLLAMA_API_URL,
-                    ollama_model_name=transcribe.OLLAMA_MODEL_NAME
-                )
-                is_reanalysis_successful = (analysis_results and 
-                                          analysis_results.get("full_markdown_response") not in transcribe.FAILED_ANALYSIS_SUMMARIES and 
-                                          analysis_results.get("full_markdown_response", "").strip())
-                if is_reanalysis_successful:
-                    full_markdown_response = analysis_results.get('full_markdown_response', '')
-                    title_from_reanalysis = analysis_results.get('title', 'Re-analysis')
-                    current_time_reanalysis_obj = datetime.now()
-                    transcribe.core_processing.update_db_with_new_analysis(last_record['id'], transcribe.OLLAMA_MODEL_NAME, full_markdown_response, db_name=transcribe.DB_NAME)
-                    transcribe.log.info("\n--- Parsed Re-Analysis (Ollama Markdown) ---")
-                    transcribe.log.info(f"Title: {title_from_reanalysis}")
-                    transcribe.log.info(f"Response Preview (first 150 chars):\n{full_markdown_response[:150]}...")
-                    transcribe.core_processing.save_markdown_file(
-                        title_from_reanalysis,
-                        full_markdown_response,
-                        current_time_reanalysis_obj,
-                        transcribe.MARKDOWN_SAVE_PATH
-                    )
-                else:
-                    transcribe.log.warning("Failed to re-analyze the transcription meaningfully. Previous analysis in DB remains unchanged.")
-                    if analysis_results: 
-                         transcribe.log.warning(f"Re-analysis attempt raw response (not saved to DB): {analysis_results.get('full_markdown_response')}")
-            else:
-                transcribe.log.info("No previous transcription found in the database to re-analyze, or last transcription was empty.")
-        elif action_choice == '2':
-            transcribe.log.info(f"Starting new recording session with device index: {selected_device_id_session}")
-            transcribe.capture_and_transcribe(mic_device_id_selected_by_user=selected_device_id_session, whisper_model_size=whisper_model_choice_default)
-        elif action_choice == 'q':
-            transcribe.log.info("Exiting application.")
-            sys.exit(0)
-        else:
-            if action_choice:
-                transcribe.log.warning("Invalid choice. Please enter '1', '2', or 'q'.")
+    
+    # --- Setup Section (only if not uninstalling) ---
+    print("Performing initial setup checks...")
+    # Install Homebrew dependencies (macOS only)
+    if platform.system() == 'Darwin':
+        install_brew_dependencies()
+    
+    # Install Ollama and required model
+    if not install_ollama():
+        print("\nOllama installation or model setup failed. Please check the logs.")
+        print("The application may not function correctly without Ollama and its model.")
+        if not input("Continue anyway? (y/n): ").lower() == 'y':
+            sys.exit(1)
+            
+    # Setup storage directories (ensure this is done before transcribe.cli_main)
+    setup_storage_directories()
+    
+    print("\nSetup checks complete. Launching main application...")
+    # Initialize and start the main application logic from transcribe.py
+    transcribe.cli_main()
 
 if __name__ == '__main__':
+    # Add freeze_support() for PyInstaller
+    import multiprocessing
+    multiprocessing.freeze_support()
     main() 
