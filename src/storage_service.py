@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 import wave # For writing WAV files
 import pyaudio # For paInt16 enum
+import re # Added for filename sanitization and length check
 
 # Assuming ConfigurationService and LoggingService are in the same directory or accessible via PYTHONPATH
 from src.config_service import ConfigurationService # Use relative import if in a package
@@ -14,6 +15,10 @@ from src.audio_service import AudioService # For get_pyaudio_sample_size
 # For simplicity here, we instantiate them directly. In a larger app, a central DI container might manage this.
 config_service = ConfigurationService()
 log = LoggingService.get_logger(__name__)
+
+MAX_FILENAME_LENGTH = 255 # Maximum length for a filename, adjust as needed
+# A more platform-specific check might be needed for OS compatibility,
+# but this is a common practical limit.
 
 class StorageService:
     def __init__(self):
@@ -205,12 +210,53 @@ class StorageService:
             return False
 
     def _generate_filename(self, title_prefix: str, timestamp_obj: datetime, extension: str = ".md") -> str:
-        """Generates a filename based on title prefix and timestamp."""
+        """Generates a filename based on title prefix and timestamp, ensuring it's valid and not too long."""
         time_str = timestamp_obj.strftime("%Y%m%d_%H%M%S")
-        # Sanitize title_prefix for filename (simple sanitization)
-        sane_title = "".join(c if c.isalnum() or c in (' ', '-') else '' for c in title_prefix).rstrip()
-        sane_title = sane_title.replace(' ', '_')
-        return f"{time_str}_{sane_title}{extension}" # New format: date_time_title.md
+        
+        # Sanitize title_prefix for filename
+        # Remove invalid characters, replace spaces with underscores
+        sane_title = re.sub(r'[^\w\s-]', '', title_prefix) # Keep alphanumeric, whitespace, hyphens
+        sane_title = re.sub(r'[\s_]+', '_', sane_title).strip('_') # Replace whitespace/multiple underscores with single, strip leading/trailing
+
+        if not sane_title: # If title becomes empty after sanitization
+            sane_title = "untitled"
+
+        base_filename_without_ext = f"{time_str}_{sane_title}"
+        
+        # Check length before adding extension
+        # Max length for the base part = MAX_FILENAME_LENGTH - len(extension)
+        max_base_len = MAX_FILENAME_LENGTH - len(extension)
+
+        if len(base_filename_without_ext) > max_base_len:
+            # Truncate the title part if the full name is too long
+            # Calculate how much of the title we can keep
+            # len(time_str) + 1 (for underscore) + len(truncated_title) <= max_base_len
+            available_for_title = max_base_len - (len(time_str) + 1)
+            
+            if available_for_title <= 0:
+                # This should not happen if time_str and extension are reasonable
+                # But as a fallback, use a very short name
+                log.warning(f"Filename for '{title_prefix}' is too long even for timestamp. Using minimal name.")
+                sane_title = "longname" # Fallback short title
+                base_filename_without_ext = f"{time_str}_{sane_title[:available_for_title]}" if available_for_title > 0 else time_str
+            else:
+                truncated_title = sane_title[:available_for_title]
+                base_filename_without_ext = f"{time_str}_{truncated_title}"
+            
+            log.warning(f"Original title '{title_prefix}' resulted in a filename part that was too long. Truncated to: '{base_filename_without_ext + extension}'")
+
+        final_filename = f"{base_filename_without_ext}{extension}"
+        
+        # Final check, though truncation should handle it.
+        if len(final_filename) > MAX_FILENAME_LENGTH:
+            # This would imply an issue with logic or very long extension
+            log.error(f"CRITICAL: Filename '{final_filename}' still too long after processing. This should not happen.")
+            # Fallback to a very generic name based on timestamp only
+            final_filename = f"{time_str}{extension}"
+            if len(final_filename) > MAX_FILENAME_LENGTH: # if timestamp + ext is too long (unlikely)
+                 final_filename = final_filename[:MAX_FILENAME_LENGTH]
+
+        return final_filename
 
     def save_markdown_content(self, title: str, markdown_content: str, timestamp_obj: datetime, type: str = "analysis") -> str | None:
         """

@@ -12,6 +12,10 @@ import yaml
 from src import config_service
 from src import transcribe
 
+# Assuming LoggingService is available and configured as in other modules
+from src.logging_service import LoggingService
+log = LoggingService.get_logger(__name__)
+
 def check_command_exists(command):
     """Check if a command exists in the system PATH or if it's a special case like BlackHole"""
     if command == 'blackhole-2ch':
@@ -411,6 +415,15 @@ def main():
     if args.uninstall:
         uninstall()
         sys.exit(0)
+    
+    # Initialize ConfigurationService and log version early
+    # This instance can be potentially reused if other parts of main need config
+    cfg_service = config_service.ConfigurationService() 
+    app_version = cfg_service.get_application_version()
+    if app_version:
+        log.info(f"Starting Secure Note Taker version: {app_version}")
+    else:
+        log.warning("Could not determine application version.")
     
     # --- Setup Section (only if not uninstalling) ---
     print("Performing initial setup checks...")

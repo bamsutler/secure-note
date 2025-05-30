@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Changed
+- Modified `scripts/build.py` to include the `VERSION` file in the PyInstaller build for both the main application and the uninstaller. This ensures the application can access version information at runtime.
+    - Updated the PyInstaller `--add-data` specifier for the `VERSION` file from `VERSION:VERSION` to `VERSION:.` to prevent it from being bundled as a directory.
+- Updated `src/storage_service.py` (`_generate_filename` method) to:
+    - Sanitize filenames more robustly.
+    - Implement filename length checking against `MAX_FILENAME_LENGTH`.
+    - Truncate filenames if they exceed the maximum allowed length.
+    - Add logging for truncation events.
+- Refactored version retrieval:
+    - Moved `get_application_version` function into the `ConfigurationService` class in `src/config_service.py` as a method.
+    - Updated `src/launcher.py` to instantiate `ConfigurationService` and call this method to log the application version at startup.
+
+### Added
+- Added a step to `scripts/build.py` to create a versioned zip archive (e.g., `secure-note-X.Y.Z.zip`) in the `dist` directory. This archive contains a folder with the main executable, the uninstaller, and the `VERSION` file.
+    - The archive name will include `-test` (e.g., `secure-note-X.Y.Z-test.zip`) if the build is run without a version increment flag (i.e., a development build).
+
 ## [0.3.0] - YYYY-MM-DD
 ### Changed
 - **Major refactor of application structure:**
@@ -36,8 +53,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 - `transcription_server.py` (FastAPI server).
-- Old top-level `build.py`, `core_processing.py`, `summary.py`, `transcribe.py`.
-
-## [Unreleased]
-### Added
-- Initial project setup. 
+- Old top-level `build.py`, `core_processing.py`, `summary.py`, `transcribe.py`. 

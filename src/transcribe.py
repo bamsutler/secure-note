@@ -15,22 +15,6 @@ from src.transcription_service import WhisperProvider
 # Import CLI interface
 from src import cli_interface
 
-# Add this function to read the version
-def get_app_version():
-    """Reads the version from the VERSION file."""
-    try:
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        version_file_path = os.path.join(current_dir, "..", "VERSION")
-        with open(version_file_path, "r") as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        # Using standard logging here as 'log' might not be initialized yet
-        logging.warning("VERSION file not found. Returning 'unknown' version.")
-        return "unknown"
-    except Exception as e:
-        logging.error(f"Error reading VERSION file: {e}")
-        return "error"
-
 # Create and configure our custom handler
 menu_handler = MenuAwareRichHandler()
 menu_handler.setFormatter(logging.Formatter("%(message)s", datefmt="[%X]"))
@@ -492,7 +476,7 @@ def cli_main():
             sys.exit(1)
 
         
-        log.info("#" * 80 + " Secure Note version " + get_app_version() + "#" * 80) 
+        log.info("#" * 80 + " Secure Note version " + config.get_application_version() + "#" * 80) 
         
         # Use the new function from cli_interface to select the audio device
         # It handles logging, printing device lists, and user input.

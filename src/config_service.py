@@ -2,9 +2,12 @@ import yaml
 import os
 import logging
 from pathlib import Path
+import sys # Added for sys._MEIPASS
 
 # Configure logger for this service
 log = logging.getLogger(__name__) # Use __name__ for logger hierarchy
+
+VERSION_FILE_NAME = "VERSION"
 
 class ConfigurationService:
     _config = None
@@ -164,3 +167,48 @@ class ConfigurationService:
             return value
         except KeyError:
             return default
+        
+    @staticmethod
+    def get_application_version() -> str | None:
+        """
+        Reads the application version from the VERSION file.
+        Handles running from source and from a PyInstaller bundle.
+        """
+        try:
+            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+                # Running in a PyInstaller bundle
+                # PyInstaller extracts data to sys._MEIPASS. The VERSION file should be at the root of that temp dir.
+                base_path = Path(sys._MEIPASS)
+                version_file_path = base_path / VERSION_FILE_NAME
+            else:
+                # Running as a normal script
+                # Assume VERSION file is at the project root, relative to this src/config_service.py file
+                # Path(__file__).resolve() is src/config_service.py
+                # .parent is src/
+                # .parent is project root
+                base_path = Path(__file__).resolve().parent.parent 
+                version_file_path = base_path / VERSION_FILE_NAME
+
+            if version_file_path.exists():
+                with open(version_file_path, "r") as f:
+                    version = f.read().strip()
+                    log.info(f"Application version '{version}' loaded from {version_file_path}")
+                    return version
+            else:
+                log.error(f"Version file not found at: {version_file_path}")
+                # Fallback: try to read from CWD if not found in expected locations
+                # This might be useful if the script is run from the root directory directly
+                # and not as part of a structured execution from within src/
+                cwd_version_file_path = Path.cwd() / VERSION_FILE_NAME
+                if cwd_version_file_path.exists():
+                    log.info(f"Trying fallback to CWD for VERSION file: {cwd_version_file_path}")
+                    with open(cwd_version_file_path, "r") as f:
+                        version = f.read().strip()
+                        log.info(f"Application version '{version}' loaded from CWD fallback {cwd_version_file_path}")
+                        return version
+                else:
+                    log.error(f"Version file also not found at CWD: {cwd_version_file_path}")
+                    return None
+        except Exception as e:
+            log.exception(f"Error reading version file: {e}") # Use log.exception to include stack trace
+            return None

@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import shutil
+import zipfile
 
 VERSION_FILE = "VERSION"
 
@@ -70,14 +71,16 @@ def build_executable(script_name, output_name, app_version, is_uninstaller=False
         cmd.extend([
             '--collect-all=whisper',  # Ensure all whisper models are included
             '--collect-all=torch',    # Ensure all torch dependencies are included
-            '--add-data', 'prompt_templates:prompt_templates' # Include the prompt_templates folder
+            '--add-data', 'prompt_templates:prompt_templates', # Include the prompt_templates folder
+            '--add-data', f'{VERSION_FILE}:.' # Include the VERSION file in the root of the bundle
         ])
     else:
         # Add the main application path as a data file for the uninstaller
         main_app_path = os.path.join('dist', 'secure-note')
         if os.path.exists(main_app_path):
             cmd.extend([
-                '--add-data', f'{main_app_path}:.'
+                '--add-data', f'{main_app_path}:.',
+                '--add-data', f'{VERSION_FILE}:.' # Include the VERSION file in the root of the bundle
             ])
     
     # Add the main script
@@ -122,6 +125,53 @@ def main():
     print("Two executables have been created in the 'dist' directory:")
     print("1. secure-note - The main application")
     print("2. uninstall-secure-note - The uninstaller")
+
+    # Zip the artifacts
+    print(f"\nZipping artifacts for version {app_version_for_build}...")
+    app_name = "secure-note"
+    dist_dir = "dist"
+    
+    # Determine archive name based on whether version was incremented
+    if increment_level is None: # This indicates a development build (no version increment flag was passed)
+        archive_basename = f"{app_name}-{app_version_for_build}-test"
+        print(f"Development build detected. Archive will be named: {archive_basename}.zip")
+    else: # This is a release build (patch, minor, or major increment)
+        archive_basename = f"{app_name}-{app_version_for_build}"
+        print(f"Release build detected. Archive will be named: {archive_basename}.zip")
+
+    # archive_dir_path is the name of the folder *inside* the zip file.
+    # It should match the archive_basename for consistency.
+    internal_folder_name = archive_basename 
+    zip_file_path = os.path.join(dist_dir, f"{archive_basename}.zip")
+
+    # Ensure the executables exist before trying to zip them
+    main_app_exe_path = os.path.join(dist_dir, app_name)
+    uninstaller_exe_path = os.path.join(dist_dir, f"uninstall-{app_name}")
+
+    if not os.path.exists(main_app_exe_path):
+        print(f"ERROR: Main application executable not found at {main_app_exe_path}. Skipping zipping.")
+        return
+    if not os.path.exists(uninstaller_exe_path):
+        print(f"ERROR: Uninstaller executable not found at {uninstaller_exe_path}. Skipping zipping.")
+        return
+
+    try:
+        with zipfile.ZipFile(zip_file_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Add main executable to the folder inside the zip
+            zf.write(main_app_exe_path, os.path.join(internal_folder_name, os.path.basename(main_app_exe_path)))
+            # Add uninstaller to the folder inside the zip
+            zf.write(uninstaller_exe_path, os.path.join(internal_folder_name, os.path.basename(uninstaller_exe_path)))
+            # Add the VERSION file to the folder inside the zip
+            if os.path.exists(VERSION_FILE):
+                 zf.write(VERSION_FILE, os.path.join(internal_folder_name, VERSION_FILE))
+            else:
+                print(f"Warning: {VERSION_FILE} not found. It will not be included in the zip.")
+
+        print(f"Successfully created zip archive: {zip_file_path}")
+        print(f"The archive contains a folder '{internal_folder_name}' with the executables and VERSION file.")
+
+    except Exception as e:
+        print(f"Error creating zip archive: {e}")
 
 if __name__ == '__main__':
     main() 
