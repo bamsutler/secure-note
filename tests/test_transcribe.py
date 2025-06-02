@@ -154,8 +154,8 @@ class TestTranscribeApp(unittest.TestCase):
                 mock_analysis_results, default_title="Analysis"
             )
             self.mock_storage_service.save_markdown_content.assert_called_once_with(
-                title="Test Analysis",
-                markdown_content=expected_markdown_output, # Full markdown from assemble_analysis_markdown
+                file_and_h1_title="Test Analysis",
+                body_markdown_content="Summary of test.", # Content with H1 stripped
                 timestamp_obj=mock_now,
                 type="analysis"
             )
@@ -171,7 +171,8 @@ class TestTranscribeApp(unittest.TestCase):
             self.mock_storage_service.update_analysis.assert_called_once_with(
                 recording_id=mock_record_id,
                 llm_model_used='gpt-test',
-                analysis_markdown="Summary of test." # Extracted summary
+                analysis_markdown="Summary of test.", # Extracted summary
+                title_for_file="Test Analysis" # Add title_for_file
             )
             self.mock_storage_service.delete_file.assert_called_once_with("/tmp/temp_audio.wav")
 
@@ -481,11 +482,12 @@ class TestTranscribeApp(unittest.TestCase):
             self.mock_storage_service.update_analysis.assert_called_once_with(
                 recording_id=303,
                 llm_model_used='gpt-re-test',
-                analysis_markdown=expected_markdown_to_save # Should match the full markdown passed when stripping doesn't occur due to \\n
+                analysis_markdown=expected_markdown_to_save, # Should match the full markdown passed when stripping doesn't occur due to \\n
+                title_for_file="Re-Analysis Title" # Add title_for_file
             )
             self.mock_storage_service.save_markdown_content.assert_called_once_with(
-                title="Re-Analysis Title",
-                markdown_content=expected_markdown_to_save,
+                file_and_h1_title="Re-Analysis Title",
+                body_markdown_content=expected_markdown_to_save,
                 timestamp_obj=mock_now_reanalysis, 
                 type="analysis_reprocessed"
             )

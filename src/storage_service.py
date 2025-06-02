@@ -11,24 +11,26 @@ from src.config_service import ConfigurationService # Use relative import if in 
 from src.logging_service import LoggingService
 from src.audio_service import AudioService # For get_pyaudio_sample_size
 
-# Initialize services (or they could be passed in if using dependency injection)
-# For simplicity here, we instantiate them directly. In a larger app, a central DI container might manage this.
-config_service = ConfigurationService()
+
 log = LoggingService.get_logger(__name__)
 
 MAX_FILENAME_LENGTH = 255 # Maximum length for a filename, adjust as needed
-# A more platform-specific check might be needed for OS compatibility,
-# but this is a common practical limit.
 
 class StorageService:
-    def __init__(self):
-        self.db_name = config_service.get('database', 'name', default='transcriptions_new.db')
-        self.markdown_save_path = Path(config_service.get('paths', 'markdown_save', default='markdown_notes'))
-        self.temp_path = Path(config_service.get('paths', 'temp_path', default='audio_temp')) # New temp path
+    def __init__(self, config_service_instance=None):
+        self.config = config_service_instance if config_service_instance else ConfigurationService()
+        
+        self.db_name = self.config.get('database', 'name', default='transcriptions_new.db')
+        self.markdown_save_path = Path(self.config.get('paths', 'markdown_save', default='markdown_notes'))
+        self.temp_path = Path(self.config.get('paths', 'temp_path', default='audio_temp'))
         
         # Ensure directories exist
-        self.db_path = Path(self.db_name)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if ":memory:" not in self.db_name: 
+            self.db_path = Path(self.db_name)
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            self.db_path = None 
+            
         self.markdown_save_path.mkdir(parents=True, exist_ok=True)
         self.temp_path.mkdir(parents=True, exist_ok=True) # Ensure temp path exists
 
@@ -64,6 +66,46 @@ class StorageService:
                 # Check and remove old columns if they exist (idempotent check)
                 table_info = cursor.execute("PRAGMA table_info(recordings)").fetchall()
                 column_names = [info[1] for info in table_info]
+                
+                # Add title_for_file column if it doesn't exist
+                if 'title_for_file' not in column_names:
+                    cursor.execute("ALTER TABLE recordings ADD COLUMN title_for_file TEXT")
+                    log.info("Added 'title_for_file' column to 'recordings' table.")
+                    conn.commit() # Commit after schema change before attempting backfill
+
+                    # Backfill title_for_file for existing records with analysis_markdown
+                    log.info("Attempting to backfill 'title_for_file' for existing records...")
+                    cursor.execute("""
+                        SELECT id, timestamp, analysis_markdown 
+                        FROM recordings 
+                        WHERE analysis_markdown IS NOT NULL AND analysis_markdown != '' AND title_for_file IS NULL
+                    """)
+                    records_to_backfill = cursor.fetchall()
+                    backfilled_count = 0
+                    for rec in records_to_backfill:
+                        record_id = rec['id']
+                        timestamp_str = rec['timestamp'] # This is ISO string
+                        # analysis_md_body = rec['analysis_markdown'] # Body of markdown
+
+                        # Try to parse timestamp_str to datetime object for formatting
+                        try:
+                            dt_obj = datetime.fromisoformat(timestamp_str)
+                            formatted_time = dt_obj.strftime('%Y%m%d_%H%M%S')
+                        except ValueError:
+                            formatted_time = timestamp_str # Fallback to raw string if parsing fails
+                        
+                        # For backfilling, the actual H1 from analysis_markdown body isn't easily available without parsing.
+                        # We'll use a generic title.
+                        # The user requested "dummy titles" for backfilling.
+                        dummy_title = f"Analysis for ID {record_id} ({formatted_time})"
+                        
+                        cursor.execute("UPDATE recordings SET title_for_file = ? WHERE id = ?", (dummy_title, record_id))
+                        backfilled_count += 1
+                    conn.commit()
+                    if backfilled_count > 0:
+                        log.info(f"Backfilled 'title_for_file' for {backfilled_count} records.")
+                    else:
+                        log.info("No records found requiring 'title_for_file' backfill, or backfill already done.")
                 
                 # Renaming example: 'ollama_model_used' to 'llm_model_used'
                 # 'ollama_response_markdown' to 'analysis_markdown'
@@ -174,6 +216,38 @@ class StorageService:
             log.error(f"Database error in '{self.db_name}' while fetching records without analysis: {e}")
             return [] # Return empty list on error
 
+    def get_records_with_analysis(self) -> list[dict]:
+        """Fetches records that have a non-empty analysis_markdown.
+           Returns a list of dicts, each with id, timestamp, llm_model_used, analysis_markdown, and title_for_file."""
+        records_with_analysis = []
+        try:
+            with self._get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id, timestamp, llm_model_used, analysis_markdown, title_for_file
+                    FROM recordings
+                    WHERE analysis_markdown IS NOT NULL AND analysis_markdown != ''
+                    ORDER BY id ASC
+                """)
+                raw_records = cursor.fetchall()
+                for row in raw_records:
+                    record = dict(row)
+                    try:
+                        record['timestamp'] = datetime.fromisoformat(record['timestamp'])
+                    except (ValueError, TypeError) as e:
+                        log.warning(f"Could not parse timestamp '{record['timestamp']}' for record ID {record['id']} with analysis. Skipping. Error: {e}")
+                        continue
+                    records_with_analysis.append(record)
+                
+                if records_with_analysis:
+                    log.info(f"Found {len(records_with_analysis)} records with analysis.")
+                else:
+                    log.info("No records found with analysis.")
+                return records_with_analysis
+        except sqlite3.Error as e:
+            log.error(f"Database error in '{self.db_name}' while fetching records with analysis: {e}")
+            return []
+
     def get_recording_by_id(self, recording_id: int) -> dict | None:
         """Fetches a specific recording by its ID."""
         try:
@@ -188,19 +262,19 @@ class StorageService:
             log.error(f"Database error in '{self.db_name}' while fetching record ID {recording_id}: {e}")
             return None
 
-    def update_analysis(self, recording_id: int, llm_model_used: str, analysis_markdown: str):
-        """Updates an existing recording with new analysis data."""
+    def update_analysis(self, recording_id: int, llm_model_used: str, analysis_markdown: str, title_for_file: str):
+        """Updates an existing recording with new analysis data and the title used for the file."""
         try:
             with self._get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                 UPDATE recordings
-                SET llm_model_used = ?, analysis_markdown = ?
+                SET llm_model_used = ?, analysis_markdown = ?, title_for_file = ?
                 WHERE id = ?
-                """, (llm_model_used, analysis_markdown, recording_id))
+                """, (llm_model_used, analysis_markdown, title_for_file, recording_id))
                 conn.commit()
                 if cursor.rowcount > 0:
-                    log.info(f"Analysis for recording ID {recording_id} updated in database '{self.db_name}'.")
+                    log.info(f"Analysis and title for recording ID {recording_id} updated in database '{self.db_name}'.")
                     return True
                 else:
                     log.warning(f"No record found with ID {recording_id} to update in '{self.db_name}'.")
@@ -258,34 +332,55 @@ class StorageService:
 
         return final_filename
 
-    def save_markdown_content(self, title: str, markdown_content: str, timestamp_obj: datetime, type: str = "analysis") -> str | None:
+    def save_markdown_content(self, file_and_h1_title: str, body_markdown_content: str, timestamp_obj: datetime, type: str = "analysis") -> str | None:
         """
-        Saves markdown content to a file.
+        Saves markdown content to a file. The H1 header is derived from file_and_h1_title.
         Args:
-            title (str): The title for the markdown, used in filename generation.
-            markdown_content (str): The actual markdown content to save.
+            file_and_h1_title (str): The title for the markdown, used for filename generation AND as the H1 header.
+            body_markdown_content (str): The body of the markdown content (without H1).
             timestamp_obj (datetime): Timestamp for filename generation.
-            type (str): Type of content, e.g., 'analysis' or 'transcription'. Determines save sub-path.
+            type (str): Type of content. Used to determine save sub-path and default title prefix if file_and_h1_title is empty.
         Returns:
             str | None: The full path to the saved file, or None on failure.
         """
-        if type == "analysis" or type == "analysis_reprocessed": # Treat "analysis_reprocessed" like "analysis"
+        # Determine base path and a title prefix for filename generation if file_and_h1_title is empty
+        # However, file_and_h1_title should ideally always be provided by the caller.
+        if type == "analysis" or type == "analysis_reprocessed" or type == "analysis_recovered":
             base_path = self.markdown_save_path
-            file_title_prefix = title if title else ("Re-analysis" if type == "analysis_reprocessed" else "Analysis")
+            # If type is for subfolder, adjust base_path here. Example:
+            if type == "analysis_recovered":
+                 effective_base_path = base_path / "recovered"
+            elif type == "analysis_reprocessed": # Example for reprocessed, if needed differently
+                 effective_base_path = base_path / "reprocessed" 
+            else: # Standard "analysis"
+                 effective_base_path = base_path
         else:
             log.error(f"Unknown or unsupported markdown content type for file saving: {type}")
             return None
         
-        filename = self._generate_filename(file_title_prefix, timestamp_obj, ".md")
-        filepath = base_path / filename
+        # Ensure title_prefix for filename is never empty
+        title_for_filename = file_and_h1_title
+        if not title_for_filename:
+            log.warning(f"file_and_h1_title was empty for type '{type}'. Using a default title for filename.")
+            if type == "analysis_reprocessed":
+                title_for_filename = "Re-analysis"
+            elif type == "analysis_recovered":
+                title_for_filename = "Recovered_Analysis"
+            else:
+                title_for_filename = "Analysis"
+            # Append timestamp to default title to ensure some uniqueness if multiple are empty
+            title_for_filename = f"{title_for_filename}_{timestamp_obj.strftime('%Y%m%d_%H%M%S')}"
+
+        filename = self._generate_filename(title_prefix=file_and_h1_title, timestamp_obj=timestamp_obj, extension=".md")
+        filepath = effective_base_path / filename
         
+        # Construct the full markdown content with H1 header
+        full_markdown_content = f"# {file_and_h1_title}\n\n{body_markdown_content}"
+
         try:
-            base_path.mkdir(parents=True, exist_ok=True) # Ensure directory exists
+            effective_base_path.mkdir(parents=True, exist_ok=True) # Ensure directory exists
             with open(filepath, 'w', encoding='utf-8') as f:
-                # If title is meant to be part of the content (e.g. H1 header)
-                # it should be included in markdown_content by the caller.
-                # This function just saves the provided markdown_content.
-                f.write(markdown_content)
+                f.write(full_markdown_content)
             log.info(f"Markdown content ({type}) saved to: {filepath}")
             return str(filepath)
         except IOError as e:

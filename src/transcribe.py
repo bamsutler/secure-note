@@ -125,11 +125,17 @@ def process_audio_in_background(audio_data, samplerate, whisper_model_size):
                     default_title="Analysis"
                 )
 
+                # Let's strip H1 here if present for `response_for_db`.
+                # This needs to be done BEFORE calling save_markdown_content
+                response_body_for_db = final_markdown_to_save
+                if final_markdown_to_save.startswith(f"# {title_from_analysis}\n\n"):
+                    response_body_for_db = final_markdown_to_save[len(f"# {title_from_analysis}\n\n"):]
+
                 if is_analysis_successful:
                     # Save analysis
                     markdown_path = storage_service.save_markdown_content(
-                        title=title_from_analysis,
-                        markdown_content=final_markdown_to_save,
+                        file_and_h1_title=title_from_analysis,
+                        body_markdown_content=response_body_for_db, # Pass the H1-stripped body
                         timestamp_obj=current_time_obj,
                         type="analysis"
                     )
@@ -142,18 +148,14 @@ def process_audio_in_background(audio_data, samplerate, whisper_model_size):
                     # Log the generated markdown even if not "successful" for debugging
                     log.info(f"Generated markdown (even if not saved as primary):\n{final_markdown_to_save[:500]}...")
 
-                # Let's strip H1 here if present for `response_for_db`.
-                response_body_for_db = final_markdown_to_save
-                if final_markdown_to_save.startswith(f"# {title_from_analysis}\n\n"):
-                    response_body_for_db = final_markdown_to_save[len(f"# {title_from_analysis}\n\n"):]
-                
                 model_used_for_db = analysis_results.get('model_used', 'default_analysis_model')
 
                 # Update the existing DB record with analysis results
                 update_success = storage_service.update_analysis(
-                    recording_id=record_id, # Use the ID from the initial save
+                    recording_id=record_id,
                     llm_model_used=model_used_for_db, 
-                    analysis_markdown=response_body_for_db 
+                    analysis_markdown=response_body_for_db, # This is H1 stripped
+                    title_for_file=title_from_analysis # Store the H1/file title
                 )
                 if update_success:
                     log.info(f"Analysis for record ID {record_id} successfully updated in the database.")
@@ -250,7 +252,8 @@ def process_existing_for_analysis_in_background(record_data: dict):
             update_success = storage_service.update_analysis(
                 recording_id=record_id,
                 llm_model_used=new_llm_model_used,
-                analysis_markdown=response_body_for_db
+                analysis_markdown=response_body_for_db, # This is H1 stripped
+                title_for_file=title_from_analysis # Store the H1/file title
             )
             if update_success:
                 log.info(f"Background: Database updated for record ID: {record_id}.")
@@ -260,8 +263,8 @@ def process_existing_for_analysis_in_background(record_data: dict):
             # Save the new analysis to a markdown file
             # Use the original timestamp of the recording for the markdown filename
             md_path = storage_service.save_markdown_content(
-                title=title_from_analysis, # Use the title from assembly (might include ID)
-                markdown_content=final_markdown_to_save, # Full markdown with H1
+                file_and_h1_title=title_from_analysis, # Use the title from assembly (might include ID)
+                body_markdown_content=response_body_for_db, # CORRECTED: Pass the H1-stripped body
                 timestamp_obj=original_timestamp_obj, # Original recording timestamp
                 type="analysis" # Standard analysis type
             )
@@ -372,6 +375,78 @@ def process_existing_transcription():
             log.info(cli_interface.NO_UNANALYZED_RECORDS_FOUND_INFO)
         
         log.info(cli_interface.DOCTOR_QUEUE_COMPLETE_INFO)
+
+        # --- BEGIN NEW LOGIC: Check for missing markdown files ---
+        log.info("\n--- Checking for missing Markdown files for analyzed records ---")
+        try:
+            records_with_analysis = storage_service.get_records_with_analysis()
+            if not records_with_analysis:
+                log.info("No records with analysis found in the database. Skipping missing file check.")
+            else:
+                markdown_dir = storage_service.markdown_save_path
+                try:
+                    disk_files = [f for f in os.listdir(markdown_dir) if f.endswith('.md')]
+                    log.info(f"Found {len(disk_files)} markdown files in {markdown_dir}.")
+                except FileNotFoundError:
+                    log.warning(f"Markdown directory {markdown_dir} not found. Cannot check for missing files.")
+                    disk_files = [] # Ensure disk_files is defined
+                except Exception as e:
+                    log.error(f"Error listing files in {markdown_dir}: {e}. Cannot check for missing files.")
+                    disk_files = [] # Ensure disk_files is defined
+
+                missing_files_found = 0
+                regenerated_files_count = 0
+
+                for record in records_with_analysis:
+                    record_id = record.get('id')
+                    analysis_md_content = record.get('analysis_markdown') # This is the body
+                    record_timestamp_obj = record.get('timestamp') # datetime object
+                    title_for_file_from_db = record.get('title_for_file')
+
+                    if not analysis_md_content or not record_timestamp_obj or not title_for_file_from_db:
+                        log.warning(f"Record ID {record_id} is missing critical data (body, timestamp, or title_for_file). Skipping file check for it.")
+                        continue
+
+                    # Use the definitive title from the database for filename generation
+                    expected_filename = storage_service._generate_filename(
+                        title_prefix=title_for_file_from_db,
+                        timestamp_obj=record_timestamp_obj,
+                        extension=".md"
+                    )
+                    
+                    # Check against files in the main markdown_notes directory for originals
+                    # and the recovered directory
+                    expected_filepath_original = markdown_dir / expected_filename
+                    expected_filepath_recovered = markdown_dir / "recovered" / expected_filename
+
+                    # os.listdir gives filenames, not full paths, so check against expected_filename
+                    if expected_filename not in disk_files and not os.path.exists(expected_filepath_recovered):
+                        missing_files_found += 1
+                        log.warning(f"Missing markdown file for Record ID: {record_id}. Expected original: {expected_filepath_original} or recovered: {expected_filepath_recovered}")
+                        
+                        log.info(f"Attempting to regenerate file for Record ID: {record_id} using stored title '{title_for_file_from_db}'...")
+                        
+                        saved_path = storage_service.save_markdown_content(
+                            file_and_h1_title=title_for_file_from_db, 
+                            body_markdown_content=analysis_md_content, # Body from DB
+                            timestamp_obj=record_timestamp_obj,
+                            type="analysis_recovered" # Saves to recovered/ subfolder
+                        )
+                        if saved_path:
+                            log.info(f"Successfully regenerated and saved missing markdown file for Record ID {record_id} to: {saved_path}")
+                            regenerated_files_count += 1
+                        else:
+                            log.error(f"Failed to regenerate markdown file for Record ID {record_id}.")
+                    
+                if missing_files_found == 0:
+                    log.info("No missing markdown files found for analyzed records.")
+                else:
+                    log.info(f"Found {missing_files_found} missing markdown file(s). Attempted to regenerate {regenerated_files_count}.")
+
+        except Exception as e:
+            log.error(f"Error during missing markdown file check: {e}")
+        # --- END NEW LOGIC ---
+
         # menu_handler.update_menu(cli_interface.get_menu_text()) # Reset menu for the next part
 
         # Part 2: Interactively re-analyze the single most recent recording (original behavior)
@@ -428,17 +503,17 @@ def process_existing_transcription():
             update_success = storage_service.update_analysis(
                 recording_id=recording_id,
                 llm_model_used=new_llm_model_used,
-                analysis_markdown=response_body_for_db
+                analysis_markdown=response_body_for_db, # H1 stripped body
+                title_for_file=title_from_reanalysis # The title for H1 and filename
             )
 
             if update_success:
                 log.info(f"Interactive re-analysis for recording ID {recording_id} successfully updated in the database.")
-                # For interactive re-analysis, use current time for the MD file to distinguish it
                 new_md_path = storage_service.save_markdown_content(
-                    title=title_from_reanalysis, 
-                    markdown_content=final_markdown_to_save_reanalysis,
-                    timestamp_obj=current_time_reanalysis_obj, # Current time for this re-analysis file
-                    type="analysis_reprocessed" 
+                    file_and_h1_title=title_from_reanalysis, 
+                    body_markdown_content=response_body_for_db, # H1 stripped body
+                    timestamp_obj=current_time_reanalysis_obj, 
+                    type="analysis_reprocessed" # Saves to reprocessed/ subfolder
                 )
                 if new_md_path:
                     log.info(f"Interactive re-analysis also saved to new markdown file: {new_md_path}")
